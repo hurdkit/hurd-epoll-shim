@@ -141,6 +141,19 @@ static int scan(struct obj *e, struct pollfd *pf, unsigned *seq, int k,
 	return cnt;
 }
 
+/* On GNU/Hurd a poll() can stop returning altogether when another thread
+ * closes one of its descriptors, even after another of them becomes ready;
+ * and it returns at once, with nothing ready, for events a descriptor
+ * cannot produce (EPOLLPRI on a pipe).  There the helper polls with a
+ * timeout, so that it looks at its set again at least every
+ * HELPER_POLL_MS, and waits instead of polling again after an early empty
+ * return, so that it does not spin. */
+#ifdef __GNU__
+#define HELPER_POLL_MS 1000
+#else
+#define HELPER_POLL_MS (-1)
+#endif
+
 static void *epoll_main(void *arg)
 {
 	struct obj *e = arg;
@@ -151,7 +164,8 @@ static void *epoll_main(void *arg)
 	pthread_mutex_lock(&e->mu);
 	while (!e->closing) {
 		unsigned gen = e->u.ep.gen;
-		bool ready = false, park = false;
+		bool ready = false, park = false, early = false;
+		int64_t start;
 		char c;
 		int k, r, err;
 
@@ -175,7 +189,8 @@ static void *epoll_main(void *arg)
 		pf[k].revents = 0;
 		e->u.ep.polling = true;
 		pthread_mutex_unlock(&e->mu);
-		r = poll(pf, (nfds_t)k + 1, -1);
+		start = now_ns(CLOCK_MONOTONIC);
+		r = poll(pf, (nfds_t)k + 1, HELPER_POLL_MS);
 		err = errno;
 		pthread_mutex_lock(&e->mu);
 		e->u.ep.polling = false;
@@ -183,6 +198,10 @@ static void *epoll_main(void *arg)
 			ready = scan(e, pf, seq, k, NULL, 0) > 0;
 		else if (r < 0 && err != EINTR)
 			park = true; /* e.g. too many fds: wait for a change */
+		else if (r == 0 && HELPER_POLL_MS > 0 &&
+		    now_ns(CLOCK_MONOTONIC) - start <
+		    (int64_t)HELPER_POLL_MS * 500000)
+			early = true;
 		if (ready && !e->u.ep.ready) {
 			e->u.ep.ready = true;
 			set_readable(e, true);
@@ -190,6 +209,13 @@ static void *epoll_main(void *arg)
 		if (ready || park)
 			while (!e->closing && e->u.ep.gen == gen)
 				pthread_cond_wait(&e->cv, &e->mu);
+		if (early) {
+			struct timespec until =
+			    cond_deadline((int64_t)HELPER_POLL_MS * 1000000);
+			while (!e->closing && e->u.ep.gen == gen &&
+			    pthread_cond_timedwait(&e->cv, &e->mu, &until) == 0)
+				;
+		}
 	}
 	pthread_mutex_unlock(&e->mu);
 	free(pf);

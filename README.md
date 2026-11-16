@@ -95,6 +95,12 @@ a version string.
 - A descriptor closed with the unwrapped `close()` is dropped when `poll()`
   reports `POLLNVAL`. If its number is reused before that, the new file
   inherits the old registration.
+- On GNU/Hurd, a `poll()` can stop returning when another thread closes one
+  of its descriptors, even after another of them becomes ready, and it
+  returns at once for events a descriptor cannot produce (`EPOLLPRI` on a
+  pipe). The helper thread therefore polls with a one-second timeout there:
+  after an unwrapped `close()` of a member, the epoll descriptor can be up to
+  a second late, and an idle epoll instance wakes once a second.
 - An epoll descriptor becomes readable a thread hand-off after a member
   becomes ready.
 - After `epoll_wait()` returns events, the epoll descriptor is unreadable for

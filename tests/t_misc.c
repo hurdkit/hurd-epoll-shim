@@ -51,14 +51,13 @@ static int child(int efd, int ep)
 	return 0;
 }
 
-int main(int argc, char **argv)
+int main(void)
 {
 	int p[2], efd, ep, tfd, st, r;
 	char c = 0;
 	uint64_t v;
 	pid_t pid;
 
-	(void)argc;
 	plan(15);
 
 	efd = eventfd(0, EFD_NONBLOCK);
@@ -95,7 +94,10 @@ int main(int argc, char **argv)
 
 	{
 		struct flock fl;
-		int f = open(argv[0], O_RDONLY);
+		char path[] = "/tmp/hurd-epoll-shim-lock-XXXXXX";
+		int f = mkstemp(path);
+		if (f >= 0)
+			unlink(path);
 		memset(&fl, 0, sizeof fl);
 		fl.l_type = F_RDLCK;
 		fl.l_whence = SEEK_SET;

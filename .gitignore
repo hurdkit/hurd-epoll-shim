@@ -1,0 +1,5 @@
+build/
+*.o
+libepoll-shim.so*
+libepoll-shim.a
+epoll-shim.pc

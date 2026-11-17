@@ -23,6 +23,16 @@ static int mask_equal(const sigset_t *a, const sigset_t *b)
 	return 1;
 }
 
+/* The number of open descriptors of this process. */
+static int open_fds(void)
+{
+	int n = 0;
+	for (int fd = 0; fd < 1024; fd++)
+		if (fcntl(fd, F_GETFD) != -1)
+			n++;
+	return n;
+}
+
 static int blk_fd;
 static uint32_t blk_signo;
 
@@ -56,6 +66,7 @@ int main(void)
 	struct signalfd_siginfo si[4];
 	int fd, fd2;
 	ssize_t n;
+	int fds_at_start = open_fds();
 
 	sigemptyset(&blocked);
 	sigaddset(&blocked, SIGUSR1);
@@ -65,7 +76,7 @@ int main(void)
 	sigaddset(&m1, SIGUSR1);
 	m12 = blocked;
 
-	plan(30);
+	plan(31);
 
 	ok(sizeof(struct signalfd_siginfo) == 128 &&
 		offsetof(struct signalfd_siginfo, ssi_int) == 44 &&
@@ -202,6 +213,15 @@ int main(void)
 		sleep_ms(200);
 		ok(sigaction(SIGUSR1, NULL, &sa) == 0 && sa.sa_handler == SIG_DFL,
 		    "SIGUSR1 disposition restored after the last close");
+	}
+	{
+		/* Nor does a process without signalfds keep a descriptor of the
+		 * shim's: its pipe goes with the last signalfd. */
+		int now = -1;
+		for (int i = 0; i < 100 && (now = open_fds()) != fds_at_start; i++)
+			sleep_ms(10);
+		ok(now == fds_at_start,
+		    "the last close gives every descriptor back");
 	}
 	return done();
 }

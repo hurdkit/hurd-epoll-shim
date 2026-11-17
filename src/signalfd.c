@@ -7,7 +7,8 @@
  * handler (it only calls write(), which is async-signal-safe) forwards each
  * delivery through a pipe, and the helper queues it into every signalfd
  * whose mask contains it.  Replaced dispositions are restored once no
- * signalfd wants the signal any more.
+ * signalfd wants the signal any more, and the helper and its pipe go away
+ * with the last signalfd.
  *
  * sigwaitinfo()/sigtimedwait() are not used: GNU/Hurd's implementation
  * returns an already-pending signal without dequeuing it (a waiter would
@@ -108,6 +109,26 @@ static bool deliver(const struct rec *r)
 	return any;
 }
 
+/* sig_mu held, no signalfd left, called by the helper thread.  Its handlers
+ * are uninstalled and it has every signal blocked, so nothing writes to
+ * the pipe any more: hand back what is still in it and close it, so that
+ * a process without signalfds holds no descriptor of ours.  The next
+ * signalfd() starts over. */
+static void retire(void)
+{
+	struct pollfd p = { sig_r, POLLIN, 0 };
+	struct rec r;
+
+	while (poll(&p, 1, 0) == 1 &&
+	    read(sig_r, &r, sizeof r) == (ssize_t)sizeof r)
+		if (r.signo > 0 && r.signo < NSIG)
+			kill(getpid(), (int)r.signo);
+	close(sig_r);
+	close(sig_w);
+	sig_r = sig_w = -1;
+	sig_running = false;
+}
+
 static void *sig_main(void *arg)
 {
 	sigset_t want, block, again;
@@ -138,6 +159,11 @@ static void *sig_main(void *arg)
 				kill(getpid(), s); /* unwanted now: give it back */
 		}
 		sigemptyset(&again);
+		if (!sig_list) {
+			retire();
+			pthread_mutex_unlock(&sig_mu);
+			return NULL;
+		}
 		pthread_mutex_unlock(&sig_mu);
 
 		if (read(sig_r, &r, sizeof r) != (ssize_t)sizeof r ||

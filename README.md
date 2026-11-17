@@ -25,7 +25,8 @@ epoll set.
   `SA_SIGINFO` handler for those signals. The handler only calls `write()`
   into a pipe, and the helper reads that pipe and queues each signal into the
   matching signalfds. When no signalfd wants a signal any more, the previous
-  disposition is restored.
+  disposition is restored. When the last signalfd is closed, the helper and
+  its pipe go away, so the process holds no descriptor of the shim's.
 
   `sigwaitinfo()` and `sigtimedwait()` are not used, for three reasons. Hurd
   glibc returns an already-pending signal from them without dequeuing it.

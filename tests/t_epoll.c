@@ -3,6 +3,8 @@
 #define _GNU_SOURCE
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/signalfd.h>
+#include <sys/timerfd.h>
 
 #include <fcntl.h>
 #include <pthread.h>
@@ -122,7 +124,7 @@ int main(void)
 	volatile int minus_one = -1; /* hide it from glibc's access attribute */
 
 	main_thread = pthread_self();
-	plan(67);
+	plan(69);
 
 	errno = 0;
 	ok(epoll_create(0) == -1 && errno == EINVAL, "epoll_create(0) -> EINVAL");
@@ -429,6 +431,71 @@ int main(void)
 		atomic_store(&stop, 1);
 		pthread_join(th, NULL);
 		ok(bad == 0, "concurrent epoll_ctl and epoll_wait");
+	}
+
+	/* A timer whose deadline has passed is reported by a wait that does
+	 * not block.  The shim decides by the clock, so it holds from the
+	 * deadline on; the kernel needs its timer interrupt first. */
+	{
+		struct itimerspec one = { { 0, 0 }, { 0, 1000000 } };
+		int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+		int ep2 = epoll_create1(0), bad = 0;
+
+		add(ep2, tfd, EPOLLIN, 7);
+		for (int i = 0; i < 200; i++) {
+			struct timespec t;
+			int64_t due, now;
+			uint64_t v;
+
+			timerfd_settime(tfd, 0, &one, NULL);
+			clock_gettime(CLOCK_MONOTONIC, &t);
+			due = (int64_t)t.tv_sec * 1000000000 + t.tv_nsec + 1000000 +
+			    (SHIM ? 0 : 1000000);
+			do {
+				clock_gettime(CLOCK_MONOTONIC, &t);
+				now = (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+			} while (now < due);
+			r = epoll_wait(ep2, out, 8, 0);
+			if (r != 1 || out[0].data.u64 != 7)
+				bad++;
+			if (read(tfd, &v, sizeof v) != (ssize_t)sizeof v)
+				bad++;
+		}
+		ok(bad == 0, "a due timerfd is ready for epoll_wait with timeout 0");
+		close(tfd);
+		close(ep2);
+	}
+
+	/* One signal makes every signalfd that wants it ready: a single wait
+	 * reports all of them, not only the first one to be served. */
+	{
+		struct signalfd_siginfo si;
+		sigset_t usr2;
+		int s1, s2, ep2 = epoll_create1(0), bad = 0;
+
+		sigemptyset(&usr2);
+		sigaddset(&usr2, SIGUSR2);
+		pthread_sigmask(SIG_BLOCK, &usr2, NULL);
+		s1 = signalfd(-1, &usr2, SFD_NONBLOCK);
+		s2 = signalfd(-1, &usr2, SFD_NONBLOCK);
+		add(ep2, s1, EPOLLIN, 1);
+		add(ep2, s2, EPOLLIN, 2);
+		for (int i = 0; i < 200; i++) {
+			ssize_t n;
+
+			kill(getpid(), SIGUSR2);
+			r = epoll_wait(ep2, out, 8, 1000);
+			if (r != 2)
+				bad++;
+			/* The kernel hands the signal to one reader only. */
+			n = read(s1, &si, sizeof si);
+			n = read(s2, &si, sizeof si);
+			(void)n;
+		}
+		ok(bad == 0, "one signal readies both of its signalfds in one wait");
+		close(s1);
+		close(s2);
+		close(ep2);
 	}
 
 	close(p[0]);

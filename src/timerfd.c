@@ -39,6 +39,17 @@ static void tick(struct obj *o, int64_t now)
 	set_readable(o, true);
 }
 
+/* Account for an expiration that is due but that the helper thread has not
+ * published yet, so that a wait which starts after the deadline sees the
+ * timer as the kernel would show it. */
+void timerfd_sync(struct obj *o)
+{
+	pthread_mutex_lock(&o->mu);
+	if (!o->closing)
+		tick(o, now_ns(o->u.tm.clock));
+	pthread_mutex_unlock(&o->mu);
+}
+
 static void *timer_main(void *arg)
 {
 	struct obj *o = arg;

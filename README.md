@@ -16,7 +16,10 @@ epoll set.
   `CLOCK_MONOTONIC` condition variable.
 - **epoll:** one helper thread per instance. It `poll()`s the interest list
   and a control pipe, then marks the epoll descriptor readable while an entry
-  is ready. With nothing ready, every thread is blocked.
+  is ready. With nothing ready, every thread is blocked. `epoll_wait` does
+  not rely on the other helpers being on time: it accounts for timers that
+  are due, and when a signalfd is ready it lets the delivery of that signal
+  reach every signalfd before it reports.
 - **signalfd:** one process-wide helper thread. It is the only thread that
   unblocks the signals named in signalfd masks. The shim installs a small
   `SA_SIGINFO` handler for those signals. The handler only calls `write()`
@@ -127,6 +130,9 @@ a version string.
 - `TFD_TIMER_CANCEL_ON_SET` is accepted but never reports `ECANCELED`.
 - `CLOCK_REALTIME` timers sleep in monotonic intervals, so a clock jump is
   noticed only at the next wakeup.
+- `epoll_wait` and `read` see an expiration from its deadline on. A plain
+  `poll()` or `select()` on the descriptor sees it once the helper thread
+  has run.
 
 **signalfd**
 

@@ -96,6 +96,7 @@ struct timespec cond_deadline(int64_t rel_ns);
 /* per kind */
 ssize_t eventfd_rw(struct obj *o, void *buf, size_t n, bool wr);
 ssize_t timerfd_read(struct obj *o, void *buf, size_t n);
+void timerfd_sync(struct obj *o);
 ssize_t signalfd_read(struct obj *o, void *buf, size_t n);
 void epoll_kick(struct obj *e);
 void epoll_forget(struct obj *e, int fd);

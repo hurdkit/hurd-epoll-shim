@@ -320,6 +320,56 @@ API int epoll_ctl(int epfd, int op, int fd, struct epoll_event *ev)
 	return r;
 }
 
+/* No lock held.  A reference to the usable shim object behind fd, or NULL. */
+static struct obj *shim_obj(int fd)
+{
+	struct obj *o = obj_get(fd);
+
+	if (o && o->stale) {
+		obj_put(o);
+		o = NULL;
+	}
+	return o;
+}
+
+/* No lock held: poll the snapshot without blocking, as the kernel would
+ * report it at this instant.  The pipes of timerfds and signalfds are
+ * written by helper threads, which lag behind the state they publish:
+ *
+ * - a timer that is due may not have been marked readable yet, so every
+ *   timerfd is brought up to date first;
+ * - one signal is queued into the signalfds that want it one after the
+ *   other, under the signal lock.  When a signalfd is ready, pass through
+ *   that lock, so that a delivery in progress reaches all of them, and
+ *   look again. */
+static int poll_now(struct pollfd *pf, int k)
+{
+	struct obj *o;
+	bool sig = false;
+	int r;
+
+	for (int i = 0; i < k; i++) {
+		if (!(o = shim_obj(pf[i].fd)))
+			continue;
+		if (o->kind == K_TIMERFD)
+			timerfd_sync(o);
+		obj_put(o);
+	}
+	if ((r = poll(pf, (nfds_t)k, 0)) <= 0)
+		return r;
+	for (int i = 0; i < k && !sig; i++) {
+		if (!pf[i].revents || !(o = shim_obj(pf[i].fd)))
+			continue;
+		sig = o->kind == K_SIGNALFD;
+		obj_put(o);
+	}
+	if (!sig)
+		return r;
+	sig_lock();
+	sig_unlock();
+	return poll(pf, (nfds_t)k, 0);
+}
+
 /* e->mu held: report ready entries without blocking. */
 static int collect(struct obj *e, struct epoll_event *out, int max)
 {
@@ -334,7 +384,7 @@ static int collect(struct obj *e, struct epoll_event *out, int max)
 	seq = (unsigned *)(pf + n);
 	if ((k = snapshot(e, pf, seq)) > 0) {
 		pthread_mutex_unlock(&e->mu);
-		r = poll(pf, (nfds_t)k, 0);
+		r = poll_now(pf, k);
 		pthread_mutex_lock(&e->mu);
 		r = r > 0 ? scan(e, pf, seq, k, out, max) : 0;
 	}
